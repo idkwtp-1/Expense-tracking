@@ -4,7 +4,8 @@ import { useState, useMemo, useEffect } from "react";
 import { TopBar } from "@/components/expense/TopBar";
 import { Card, Amount } from "@/components/expense/primitives";
 import { TransactionItem } from "@/components/expense/TransactionItem";
-import { categoryById } from "@/lib/types";
+import { TransactionDetailSheet } from "@/components/transaction/TransactionDetailSheet";
+import { categoryById, Transaction } from "@/lib/types";
 import { useExpense } from "@/lib/store";
 
 export const Route = createFileRoute("/transactions")({
@@ -26,6 +27,7 @@ function TransactionsPage() {
   const [selected, setSelected] = useState(todayStr);
   const [query, setQuery] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -206,7 +208,12 @@ function TransactionsPage() {
                 <Card className="px-3">
                   {items.map((tx, i) => (
                     <div key={tx.id}>
-                      <TransactionItem tx={tx} index={i} />
+                      <TransactionItem
+                        tx={tx}
+                        index={i}
+                        onClick={(t) => setSelectedTx(t)}
+                        onCameraClick={(t) => setSelectedTx(t)}
+                      />
                       {i < items.length - 1 && (
                         <div
                           className="ml-12 h-px"
@@ -221,6 +228,13 @@ function TransactionsPage() {
           })
         )}
       </div>
+
+      {/* Transaction detail drawer & receipts viewer */}
+      <TransactionDetailSheet
+        transaction={selectedTx}
+        open={!!selectedTx}
+        onClose={() => setSelectedTx(null)}
+      />
     </div>
   );
 }

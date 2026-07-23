@@ -1,18 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ChevronRight,
   Check,
-  Lock,
-  Fingerprint,
-  Bell,
-  CalendarClock,
   FileDown,
   Database,
   HardDrive,
-  Github,
-  Plus,
-  Trash2,
   RotateCcw,
   AlertTriangle,
   LogOut,
@@ -23,6 +16,7 @@ import { TopBar } from "@/components/expense/TopBar";
 import { Card } from "@/components/expense/primitives";
 import { useExpense } from "@/lib/store";
 import { supabase } from "@/lib/supabase";
+import { BackupPayload } from "@/lib/types";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -45,52 +39,120 @@ const ACCENTS = [
 
 function SettingsPage() {
   const {
+    transactions,
+    wallets,
+    walletSpends,
+    budgetLimits,
+    importData,
+    getStorageUsage,
     privacyMode,
     setPrivacyMode,
     accentColor,
     setAccentColor,
-    customRates,
-    addCustomCurrency,
-    deleteCustomCurrency,
     resetApp,
   } = useExpense();
-  const [alerts, setAlerts] = useState(true);
-  const [reminders, setReminders] = useState(true);
-  const [digest, setDigest] = useState(false);
+
   const [resetConfirm, setResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [storageSize, setStorageSize] = useState<string>("0 MB");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) setUserEmail(user.email || "Authenticated User");
     });
-  }, []);
+    getStorageUsage().then((mb) => {
+      if (mb < 0.1) {
+        setStorageSize(`${(mb * 1024).toFixed(0)} KB`);
+      } else {
+        setStorageSize(`${mb.toFixed(2)} MB`);
+      }
+    });
+  }, [getStorageUsage]);
 
-  const [newCode, setNewCode] = useState("");
-  const [newRate, setNewRate] = useState("");
-  const [error, setError] = useState("");
+  const handleExportCsv = () => {
+    const headers = [
+      "id",
+      "merchant",
+      "categoryId",
+      "amount",
+      "date",
+      "time",
+      "wallet_id",
+      "foreign_amount",
+      "foreign_currency",
+    ];
 
-  const handleAdd = () => {
-    setError("");
-    const code = newCode.trim().toUpperCase();
-    const rate = parseFloat(newRate);
-    if (code.length !== 3) {
-      setError("Currency code must be exactly 3 characters.");
-      return;
+    const escapeCsv = (val: string | number | undefined | null) => {
+      if (val === undefined || val === null) return "";
+      const str = String(val);
+      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const rows = transactions.map((t) => [
+      escapeCsv(t.id),
+      escapeCsv(t.merchant),
+      escapeCsv(t.categoryId),
+      escapeCsv(t.amount),
+      escapeCsv(t.date),
+      escapeCsv(t.time),
+      escapeCsv(t.wallet_id),
+      escapeCsv(t.foreign_amount),
+      escapeCsv(t.foreign_currency),
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const todayStr = new Date().toISOString().split("T")[0];
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `slplayer-transactions-${todayStr}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportJson = () => {
+    const payload: BackupPayload = {
+      transactions,
+      wallets,
+      walletSpends,
+      budgetLimits,
+    };
+    const jsonStr = JSON.stringify(payload, null, 2);
+    const todayStr = new Date().toISOString().split("T")[0];
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `slplayer-backup-${todayStr}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      await importData(data);
+      alert("Backup imported successfully!");
+    } catch (err: any) {
+      console.error("Import error:", err);
+      alert(`Import failed: ${err?.message || "Invalid JSON or payload structure"}`);
+    } finally {
+      e.target.value = "";
     }
-    if (isNaN(rate) || rate <= 0) {
-      setError("Rate must be a positive number.");
-      return;
-    }
-    const mainCurrencies = ["CAD", "USD", "EUR", "KGS", "CNY", "TRY", "GBP", "JPY"];
-    if (mainCurrencies.includes(code)) {
-      setError(`"${code}" is already a main currency.`);
-      return;
-    }
-    addCustomCurrency(code, rate);
-    setNewCode("");
-    setNewRate("");
   };
 
   return (
@@ -151,50 +213,45 @@ function SettingsPage() {
         </Card>
       </Group>
 
-      <Group label="Security">
-        <Card className="overflow-hidden">
-          <Row label="Change PIN" icon={<Lock size={15} />} chevron />
-          <Divider />
-          <Row
-            label="Biometric"
-            icon={<Fingerprint size={15} />}
-            caption="Coming soon"
-          >
-            <Toggle on={false} disabled onChange={() => {}} />
-          </Row>
-        </Card>
-      </Group>
-
-      <Group label="Notifications">
-        <Card className="overflow-hidden">
-          <Row label="Budget Alerts" icon={<Bell size={15} />}>
-            <Toggle on={alerts} onChange={() => setAlerts(!alerts)} />
-          </Row>
-          <Divider />
-          <Row label="Bill Reminders" icon={<CalendarClock size={15} />}>
-            <Toggle on={reminders} onChange={() => setReminders(!reminders)} />
-          </Row>
-          <Divider />
-          <Row label="Weekly Digest">
-            <Toggle on={digest} onChange={() => setDigest(!digest)} />
-          </Row>
-        </Card>
-      </Group>
-
       <Group label="Data">
         <Card className="overflow-hidden">
-          <Row label="Export CSV" icon={<FileDown size={15} />} chevron />
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept=".json"
+            onChange={handleImportFile}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            className="w-full text-left cursor-pointer active:opacity-70 transition-opacity"
+          >
+            <Row label="Export CSV" icon={<FileDown size={15} />} chevron />
+          </button>
           <Divider />
-          <Row label="Export JSON" icon={<FileDown size={15} />} chevron />
+          <button
+            type="button"
+            onClick={handleExportJson}
+            className="w-full text-left cursor-pointer active:opacity-70 transition-opacity"
+          >
+            <Row label="Export JSON" icon={<FileDown size={15} />} chevron />
+          </button>
           <Divider />
-          <Row label="Import Backup" icon={<Database size={15} />} chevron />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full text-left cursor-pointer active:opacity-70 transition-opacity"
+          >
+            <Row label="Import Backup" icon={<Database size={15} />} chevron />
+          </button>
           <Divider />
           <Row label="Receipt Storage" icon={<HardDrive size={15} />} chevron>
             <span
               className="font-mono text-[12px] mr-1"
               style={{ color: "var(--text-muted)" }}
             >
-              142 MB
+              {storageSize}
             </span>
           </Row>
         </Card>
@@ -231,85 +288,6 @@ function SettingsPage() {
         </Card>
       </Group>
 
-      <Group label="Currencies">
-        <Card className="p-4">
-          <div
-            className="text-[13px] font-semibold mb-3"
-            style={{ color: "var(--text-primary)" }}
-          >
-            Custom Currencies
-          </div>
-
-          <div className="space-y-2 mb-4">
-            {Object.keys(customRates).length === 0 ? (
-              <div className="text-xs py-1" style={{ color: "var(--text-muted)" }}>
-                No custom currencies added yet.
-              </div>
-            ) : (
-              Object.entries(customRates).map(([code, rate]) => (
-                <div
-                  key={code}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-[var(--surface-raised)] border border-[var(--border-subtle)]"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-sm" style={{ color: "var(--text-primary)" }}>
-                      {code}
-                    </span>
-                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                      1 CAD = {rate} {code}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => deleteCustomCurrency(code)}
-                    className="p-1 rounded-lg hover:bg-[var(--surface)] transition-colors cursor-pointer"
-                    style={{ color: "var(--red)" }}
-                    aria-label={`Delete ${code}`}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Code (e.g. AED)"
-              value={newCode}
-              onChange={(e) =>
-                setNewCode(e.target.value.toUpperCase().slice(0, 3))
-              }
-              className="px-3 h-10 rounded-xl text-sm font-medium outline-none bg-[var(--surface-raised)] border border-[var(--border-subtle)] w-28 uppercase"
-              style={{ color: "var(--text-primary)" }}
-            />
-            <input
-              type="text"
-              placeholder="Rate vs CAD (e.g. 2.7)"
-              value={newRate}
-              onChange={(e) => {
-                const cleaned = e.target.value.replace(/[^0-9.]/g, "");
-                setNewRate(cleaned);
-              }}
-              className="flex-1 px-3 h-10 rounded-xl text-sm font-medium outline-none bg-[var(--surface-raised)] border border-[var(--border-subtle)]"
-              style={{ color: "var(--text-primary)" }}
-            />
-            <button
-              onClick={handleAdd}
-              className="flex items-center justify-center p-2.5 h-10 rounded-xl text-white hover:opacity-90 active:scale-[0.96] transition-transform cursor-pointer"
-              style={{ backgroundColor: "var(--accent-violet)" }}
-              aria-label="Add custom currency"
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-          {error && (
-            <div className="text-[11px] mt-1.5" style={{ color: "var(--red)" }}>
-              {error}
-            </div>
-          )}
-        </Card>
-      </Group>
 
       <Group label="About">
         <Card className="overflow-hidden">
@@ -321,8 +299,7 @@ function SettingsPage() {
               1.0.0
             </span>
           </Row>
-          <Divider />
-          <Row label="GitHub" icon={<Github size={15} />} chevron />
+
         </Card>
       </Group>
 

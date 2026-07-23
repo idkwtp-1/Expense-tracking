@@ -32,6 +32,7 @@ export type Transaction = {
   wallet_id?: string;
   foreign_amount?: number;
   foreign_currency?: string;
+  receipt_urls?: string[];
 };
 
 export type Budget = {
@@ -101,3 +102,12 @@ export const formatMoneyShort = (n: number) => {
   });
   return n < 0 ? `−$${abs}` : `$${abs}`;
 };
+
+export type BackupPayload = {
+  transactions?: Transaction[];
+  wallets?: Wallet[];
+  walletSpends?: WalletSpend[];
+  budgetLimits?: { categoryId: string; limit: number }[];
+};
+
+

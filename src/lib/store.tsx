@@ -6,7 +6,7 @@ import React, {
   useMemo,
   ReactNode,
 } from "react";
-import { Transaction, Budget, Bill, Wallet, WalletSpend, RATES } from "./types";
+import { Transaction, Budget, Bill, Wallet, WalletSpend, RATES, BackupPayload } from "./types";
 import { isSameMonth, parseISO } from "date-fns";
 import { supabase } from "./supabase";
 import * as syncQueue from "./syncQueue";
@@ -14,6 +14,7 @@ import * as syncQueue from "./syncQueue";
 export interface ExpenseContextType {
   transactions: Transaction[];
   budgets: Budget[];
+  budgetLimits: { categoryId: string; limit: number }[];
   bills: Bill[];
   currentMonth: Date;
   privacyMode: boolean;
@@ -35,9 +36,13 @@ export interface ExpenseContextType {
   logSpend: (walletId: string, foreignAmount: number, note: string, categoryTag: string, date: string) => void;
   editSpend: (id: string, newForeignAmount: number, newNote: string, newCategoryTag: string, newDate: string) => void;
   deleteSpend: (id: string) => void;
-  addTransaction: (tx: Omit<Transaction, "id" | "time">) => void;
+  addTransaction: (tx: Omit<Transaction, "id" | "time">) => string;
   deleteTransaction: (id: string) => void;
   updateBudget: (categoryId: string, limit: number) => void;
+  importData: (data: BackupPayload) => Promise<void>;
+  uploadReceipts: (transactionId: string, blobs: Blob[]) => Promise<string[]>;
+  deleteReceipt: (transactionId: string, urlToDelete: string) => Promise<void>;
+  getStorageUsage: () => Promise<number>;
   setPrivacyMode: (on: boolean) => void;
   setAccentColor: (color: string) => void;
   setCurrentMonth: (date: Date) => void;
@@ -127,6 +132,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
               wallet_id: row.wallet_id || undefined,
               foreign_amount: row.foreign_amount ? parseFloat(row.foreign_amount) : undefined,
               foreign_currency: row.foreign_currency || undefined,
+              receipt_urls: row.receipt_urls || [],
             }));
             setTransactions(mappedTx);
           }
@@ -287,9 +293,11 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       wallet_id: walletId,
       id: `tx-${Math.random().toString(36).substring(2, 9)}`,
       time: timeStr,
+      receipt_urls: tx.receipt_urls || [],
     };
     setTransactions((prev) => [newTx, ...prev]);
-    upsertRow("transactions", { id: newTx.id, merchant: newTx.merchant, category_id: newTx.categoryId, amount: newTx.amount, date: newTx.date, time: newTx.time, wallet_id: newTx.wallet_id || null, foreign_amount: newTx.foreign_amount || null, foreign_currency: newTx.foreign_currency || null }, newTx.id);
+    upsertRow("transactions", { id: newTx.id, merchant: newTx.merchant, category_id: newTx.categoryId, amount: newTx.amount, date: newTx.date, time: newTx.time, wallet_id: newTx.wallet_id || null, foreign_amount: newTx.foreign_amount || null, foreign_currency: newTx.foreign_currency || null, receipt_urls: newTx.receipt_urls || [] }, newTx.id);
+    return newTx.id;
   };
 
   const deleteTransaction = (id: string) => {
@@ -554,6 +562,132 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  const importData = async (data: BackupPayload) => {
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid backup payload: Must be an object.");
+    }
+
+    const { transactions = [], wallets = [], walletSpends = [], budgetLimits = [] } = data;
+
+    if (
+      !Array.isArray(transactions) ||
+      !Array.isArray(wallets) ||
+      !Array.isArray(walletSpends) ||
+      !Array.isArray(budgetLimits)
+    ) {
+      throw new Error("Invalid backup payload format: Data arrays are missing or malformed.");
+    }
+
+    // Validate payload entries
+    for (const t of transactions) {
+      if (!t.id || typeof t.merchant !== "string" || typeof t.amount !== "number" || !t.date) {
+        throw new Error("Invalid transaction entry in backup payload.");
+      }
+    }
+    for (const w of wallets) {
+      if (!w.id || typeof w.name !== "string" || typeof w.foreign_currency !== "string") {
+        throw new Error("Invalid wallet entry in backup payload.");
+      }
+    }
+    for (const s of walletSpends) {
+      if (!s.id || !s.wallet_id || typeof s.foreign_amount !== "number" || !s.date) {
+        throw new Error("Invalid wallet spend entry in backup payload.");
+      }
+    }
+    for (const b of budgetLimits) {
+      if (!b.categoryId || typeof b.limit !== "number") {
+        throw new Error("Invalid budget limit entry in backup payload.");
+      }
+    }
+
+    // Bulk upsert into Supabase tables (wallets first for FK dependencies)
+    if (wallets.length > 0) {
+      const walletRows = wallets.map((w) => ({
+        id: w.id,
+        name: w.name,
+        foreign_currency: w.foreign_currency,
+        total_foreign_funded: w.total_foreign_funded,
+        remaining_foreign: w.remaining_foreign,
+        status: w.status,
+        created_at: w.created_at || new Date().toISOString(),
+        updated_at: w.updated_at || new Date().toISOString(),
+      }));
+      const { error } = await supabase.from("wallets").upsert(walletRows);
+      if (error) console.warn("Supabase wallets import warning:", error);
+    }
+
+    if (transactions.length > 0) {
+      const txRows = transactions.map((t) => ({
+        id: t.id,
+        merchant: t.merchant,
+        category_id: t.categoryId,
+        amount: t.amount,
+        date: t.date,
+        time: t.time || "",
+        wallet_id: t.wallet_id || null,
+        foreign_amount: t.foreign_amount || null,
+        foreign_currency: t.foreign_currency || null,
+      }));
+      const { error } = await supabase.from("transactions").upsert(txRows);
+      if (error) console.warn("Supabase transactions import warning:", error);
+    }
+
+    if (walletSpends.length > 0) {
+      const spendRows = walletSpends.map((s) => ({
+        id: s.id,
+        wallet_id: s.wallet_id,
+        foreign_amount: s.foreign_amount,
+        note: s.note || "",
+        category_tag: s.category_tag || null,
+        date: s.date,
+      }));
+      const { error } = await supabase.from("wallet_spends").upsert(spendRows);
+      if (error) console.warn("Supabase wallet_spends import warning:", error);
+    }
+
+    if (budgetLimits.length > 0) {
+      const budgetRows = budgetLimits.map((b) => ({
+        category_id: b.categoryId,
+        limit_amount: b.limit,
+      }));
+      const { error } = await supabase.from("budget_limits").upsert(budgetRows);
+      if (error) console.warn("Supabase budget_limits import warning:", error);
+    }
+
+    // Update local state by merging upserted items
+    if (transactions.length > 0) {
+      setTransactions((prev) => {
+        const map = new Map(prev.map((t) => [t.id, t]));
+        for (const t of transactions) map.set(t.id, t);
+        return Array.from(map.values()).sort((a, b) => (b.date > a.date ? 1 : b.date < a.date ? -1 : 0));
+      });
+    }
+
+    if (wallets.length > 0) {
+      setWallets((prev) => {
+        const map = new Map(prev.map((w) => [w.id, w]));
+        for (const w of wallets) map.set(w.id, w);
+        return Array.from(map.values());
+      });
+    }
+
+    if (walletSpends.length > 0) {
+      setWalletSpends((prev) => {
+        const map = new Map(prev.map((s) => [s.id, s]));
+        for (const s of walletSpends) map.set(s.id, s);
+        return Array.from(map.values());
+      });
+    }
+
+    if (budgetLimits.length > 0) {
+      setBudgetLimits((prev) => {
+        const map = new Map(prev.map((b) => [b.categoryId, b]));
+        for (const b of budgetLimits) map.set(b.categoryId, b);
+        return Array.from(map.values());
+      });
+    }
+  };
+
   const resetApp = async () => {
     // 1. Wipe Supabase — wallet_spends first (FK), then wallets, then rest
     await supabase.from("wallet_spends").delete().neq("id", "__never__");
@@ -591,6 +725,125 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     _setCurrentMonth(date);
   };
 
+  const uploadReceipts = async (transactionId: string, blobs: Blob[]): Promise<string[]> => {
+    if (!blobs || blobs.length === 0) return [];
+    try {
+      const userRes = await supabase.auth.getUser();
+      const userId = userRes.data.user?.id || "anonymous";
+      const uploadedUrls: string[] = [];
+
+      for (let i = 0; i < blobs.length; i++) {
+        const blob = blobs[i];
+        const filePath = `${userId}/${transactionId}/${i}_${Date.now()}.jpg`;
+
+        const { error: uploadErr } = await supabase.storage
+          .from("receipts")
+          .upload(filePath, blob, {
+            contentType: "image/jpeg",
+            upsert: true,
+          });
+
+        if (uploadErr) {
+          console.error("Error uploading receipt:", uploadErr);
+          continue;
+        }
+
+        const { data: urlData } = supabase.storage
+          .from("receipts")
+          .getPublicUrl(filePath);
+
+        if (urlData?.publicUrl) {
+          uploadedUrls.push(urlData.publicUrl);
+        }
+      }
+
+      if (uploadedUrls.length === 0) return [];
+
+      let updatedTxUrls: string[] = [];
+
+      setTransactions((prev) =>
+        prev.map((t) => {
+          if (t.id !== transactionId) return t;
+          const currentUrls = t.receipt_urls || [];
+          updatedTxUrls = [...currentUrls, ...uploadedUrls];
+          return { ...t, receipt_urls: updatedTxUrls };
+        })
+      );
+
+      await supabase
+        .from("transactions")
+        .update({ receipt_urls: updatedTxUrls })
+        .eq("id", transactionId);
+
+      return uploadedUrls;
+    } catch (err) {
+      console.error("uploadReceipts failed:", err);
+      return [];
+    }
+  };
+
+  const deleteReceipt = async (transactionId: string, urlToDelete: string): Promise<void> => {
+    try {
+      let filePath = "";
+      if (urlToDelete.includes("/receipts/")) {
+        filePath = decodeURIComponent(urlToDelete.split("/receipts/")[1]);
+      }
+
+      if (filePath) {
+        await supabase.storage.from("receipts").remove([filePath]);
+      }
+
+      let updatedUrls: string[] = [];
+
+      setTransactions((prev) =>
+        prev.map((t) => {
+          if (t.id !== transactionId) return t;
+          const currentUrls = t.receipt_urls || [];
+          updatedUrls = currentUrls.filter((u) => u !== urlToDelete);
+          return { ...t, receipt_urls: updatedUrls };
+        })
+      );
+
+      await supabase
+        .from("transactions")
+        .update({ receipt_urls: updatedUrls })
+        .eq("id", transactionId);
+    } catch (err) {
+      console.error("deleteReceipt failed:", err);
+    }
+  };
+
+  const getStorageUsage = async (): Promise<number> => {
+    try {
+      const listAllFiles = async (folderPath: string = ""): Promise<number> => {
+        let totalBytes = 0;
+        const { data, error } = await supabase.storage.from("receipts").list(folderPath, {
+          limit: 1000,
+        });
+
+        if (error || !data) return 0;
+
+        for (const item of data) {
+          if (!item.id || item.id === null || (!item.metadata && !item.size)) {
+            const subPath = folderPath ? `${folderPath}/${item.name}` : item.name;
+            totalBytes += await listAllFiles(subPath);
+          } else {
+            const size = item.metadata?.size || item.size || 0;
+            totalBytes += size;
+          }
+        }
+        return totalBytes;
+      };
+
+      const totalBytes = await listAllFiles("");
+      const mb = totalBytes / (1024 * 1024);
+      return Math.round(mb * 100) / 100;
+    } catch (err) {
+      console.error("getStorageUsage failed:", err);
+      return 0;
+    }
+  };
+
   const budgets = useMemo<Budget[]>(() => {
     return budgetLimits.map((b) => {
       const spent = transactions
@@ -619,6 +872,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       value={{
         transactions,
         budgets,
+        budgetLimits,
         bills,
         currentMonth,
         privacyMode,
@@ -643,6 +897,10 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
         addTransaction,
         deleteTransaction,
         updateBudget,
+        importData,
+        uploadReceipts,
+        deleteReceipt,
+        getStorageUsage,
         setPrivacyMode,
         setAccentColor,
         setCurrentMonth,

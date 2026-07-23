@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { TopBar, MonthSelector } from "@/components/expense/TopBar";
 import { TransactionList } from "@/components/expense/TransactionItem";
+import { TransactionDetailSheet } from "@/components/transaction/TransactionDetailSheet";
+import { Transaction } from "@/lib/types";
 import { ProgressBar, Amount } from "@/components/expense/primitives";
 import { useExpense } from "@/lib/store";
 import { useSheets } from "@/components/expense/MobileShell";
@@ -46,6 +48,7 @@ function Dashboard() {
   const { transactions, budgets, bills, currentMonth, privacyMode } =
     useExpense();
   const { openQuickAdd, openConverter } = useSheets();
+  const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
 
   const isSameMonthSafe = (dateStr: string, month: Date) => {
     try {
@@ -450,12 +453,22 @@ function Dashboard() {
               </div>
             ) : (
               <div className="px-3">
-                <TransactionList items={recent} />
+                <TransactionList
+                  items={recent}
+                  onItemClick={(t) => setSelectedTx(t)}
+                  onCameraClick={(t) => setSelectedTx(t)}
+                />
               </div>
             )}
           </GlassCard>
         </div>
       </div>
+
+      <TransactionDetailSheet
+        transaction={selectedTx}
+        open={!!selectedTx}
+        onClose={() => setSelectedTx(null)}
+      />
     </div>
   );
 }

@@ -9,8 +9,12 @@ CREATE TABLE IF NOT EXISTS public.transactions (
   wallet_id TEXT,
   foreign_amount NUMERIC,
   foreign_currency TEXT,
+  receipt_urls TEXT[],
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration for existing tables
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS receipt_urls TEXT[];
 
 -- Wallets table
 CREATE TABLE IF NOT EXISTS public.wallets (
