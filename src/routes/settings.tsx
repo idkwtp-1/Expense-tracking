@@ -13,10 +13,16 @@ import {
   Github,
   Plus,
   Trash2,
+  RotateCcw,
+  AlertTriangle,
+  LogOut,
+  User,
+  ShieldCheck,
 } from "lucide-react";
 import { TopBar } from "@/components/expense/TopBar";
 import { Card } from "@/components/expense/primitives";
 import { useExpense } from "@/lib/store";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -46,10 +52,20 @@ function SettingsPage() {
     customRates,
     addCustomCurrency,
     deleteCustomCurrency,
+    resetApp,
   } = useExpense();
   const [alerts, setAlerts] = useState(true);
   const [reminders, setReminders] = useState(true);
   const [digest, setDigest] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) setUserEmail(user.email || "Authenticated User");
+    });
+  }, []);
 
   const [newCode, setNewCode] = useState("");
   const [newRate, setNewRate] = useState("");
@@ -86,6 +102,39 @@ function SettingsPage() {
       >
         Settings
       </h1>
+
+      <Group label="Account">
+        <Card className="overflow-hidden">
+          <Row label="Email" icon={<User size={15} />}>
+            <span className="text-xs font-mono text-[var(--text-muted)]">
+              {userEmail || "Loading..."}
+            </span>
+          </Row>
+          <Divider />
+          <Row label="Security Status" icon={<ShieldCheck size={15} />}>
+            <span className="text-xs font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              Protected with RLS
+            </span>
+          </Row>
+          <Divider />
+          <button
+            type="button"
+            onClick={() => supabase.auth.signOut()}
+            className="w-full flex items-center justify-between px-4 py-3.5 min-h-[52px] cursor-pointer active:opacity-70 transition-opacity"
+          >
+            <div className="flex items-center gap-2.5">
+              <div
+                className="grid place-items-center rounded-lg shrink-0"
+                style={{ width: 28, height: 28, backgroundColor: "rgba(239,68,68,0.12)", color: "#EF4444" }}
+              >
+                <LogOut size={14} />
+              </div>
+              <div className="text-[14px]" style={{ color: "#EF4444" }}>Sign Out</div>
+            </div>
+            <ChevronRight size={16} style={{ color: "#EF4444", opacity: 0.6 }} />
+          </button>
+        </Card>
+      </Group>
 
       <Group label="General">
         <Card className="overflow-hidden">
@@ -276,6 +325,119 @@ function SettingsPage() {
           <Row label="GitHub" icon={<Github size={15} />} chevron />
         </Card>
       </Group>
+
+      <Group label="Danger Zone">
+        <Card className="overflow-hidden" style={{ border: "1px solid rgba(239,68,68,0.25)" }}>
+          <button
+            type="button"
+            id="reset-app-btn"
+            onClick={() => setResetConfirm(true)}
+            className="w-full flex items-center justify-between px-4 py-3.5 min-h-[52px] cursor-pointer active:opacity-70 transition-opacity"
+          >
+            <div className="flex items-center gap-2.5">
+              <div
+                className="grid place-items-center rounded-lg shrink-0"
+                style={{ width: 28, height: 28, backgroundColor: "rgba(239,68,68,0.12)", color: "#EF4444" }}
+              >
+                <RotateCcw size={14} />
+              </div>
+              <div className="text-left">
+                <div className="text-[14px]" style={{ color: "#EF4444" }}>Reset App</div>
+                <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>Permanently delete all data and start fresh</div>
+              </div>
+            </div>
+            <ChevronRight size={16} style={{ color: "#EF4444", opacity: 0.6 }} />
+          </button>
+        </Card>
+      </Group>
+
+      {resetConfirm && (
+        <ResetConfirmModal
+          resetting={resetting}
+          onCancel={() => setResetConfirm(false)}
+          onConfirm={async () => {
+            setResetting(true);
+            await resetApp();
+            setResetting(false);
+            setResetConfirm(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ResetConfirmModal({
+  resetting,
+  onCancel,
+  onConfirm,
+}: {
+  resetting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ backgroundColor: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)" }}
+    >
+      <div
+        className="w-full max-w-sm rounded-2xl p-6"
+        style={{
+          background: "rgba(20,20,28,0.95)",
+          border: "1px solid rgba(239,68,68,0.3)",
+          boxShadow: "0 24px 60px rgba(0,0,0,0.5)",
+        }}
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div
+            className="grid place-items-center rounded-full shrink-0"
+            style={{ width: 40, height: 40, backgroundColor: "rgba(239,68,68,0.12)", color: "#EF4444" }}
+          >
+            <AlertTriangle size={20} />
+          </div>
+          <div>
+            <div className="font-semibold text-[15px]" style={{ color: "var(--text-primary)" }}>Reset App?</div>
+            <div className="text-[12px]" style={{ color: "var(--text-muted)" }}>This cannot be undone</div>
+          </div>
+        </div>
+
+        <p className="text-[13px] mb-6 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+          This will permanently delete <strong style={{ color: "var(--text-primary)" }}>all transactions, wallets, budgets, and settings</strong> from both this device and the cloud. You will start completely fresh.
+        </p>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={resetting}
+            className="flex-1 h-11 rounded-xl text-[14px] font-medium cursor-pointer transition-opacity disabled:opacity-50"
+            style={{ backgroundColor: "var(--surface-raised)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)" }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            id="confirm-reset-btn"
+            onClick={onConfirm}
+            disabled={resetting}
+            className="flex-1 h-11 rounded-xl text-[14px] font-semibold text-white cursor-pointer transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
+            style={{ backgroundColor: "#EF4444" }}
+          >
+            {resetting ? (
+              <>
+                <span
+                  className="inline-block rounded-full border-2 border-white/30 border-t-white"
+                  style={{ width: 14, height: 14, animation: "spin 0.7s linear infinite" }}
+                />
+                Resetting…
+              </>
+            ) : (
+              "Yes, reset everything"
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

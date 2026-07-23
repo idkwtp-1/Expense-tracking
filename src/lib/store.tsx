@@ -9,6 +9,7 @@ import React, {
 import { Transaction, Budget, Bill, Wallet, WalletSpend, RATES } from "./types";
 import { isSameMonth, parseISO } from "date-fns";
 import { supabase } from "./supabase";
+import * as syncQueue from "./syncQueue";
 
 export interface ExpenseContextType {
   transactions: Transaction[];
@@ -42,6 +43,7 @@ export interface ExpenseContextType {
   setCurrentMonth: (date: Date) => void;
   setQuickAddOpen: (open: boolean) => void;
   setConverterOpen: (open: boolean) => void;
+  resetApp: () => Promise<void>;
 }
 
 const ExpenseContext = createContext<ExpenseContextType | undefined>(undefined);
@@ -79,21 +81,11 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     return Object.keys(allRates);
   }, [allRates]);
 
-  // Initial Load from LocalStorage & Supabase + Realtime Subscription
+  // Initial Load: Supabase is the primary source, localStorage is offline fallback only.
+  // Non-transactional settings (accent, privacy, month) still load from localStorage immediately.
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const savedTx = localStorage.getItem("slplayer-transactions");
-      if (savedTx) setTransactions(JSON.parse(savedTx));
-
-      const savedBudgets = localStorage.getItem("slplayer-budgets");
-      if (savedBudgets) setBudgetLimits(JSON.parse(savedBudgets));
-
-      const savedWallets = localStorage.getItem("slplayer-wallets");
-      if (savedWallets) setWallets(JSON.parse(savedWallets));
-
-      const savedSpends = localStorage.getItem("slplayer-wallet-spends");
-      if (savedSpends) setWalletSpends(JSON.parse(savedSpends));
-
+      // Load settings immediately from localStorage (these are purely local preferences)
       const savedMonth = localStorage.getItem("slplayer-current-month");
       if (savedMonth) _setCurrentMonth(new Date(savedMonth));
 
@@ -106,20 +98,26 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       const savedRates = localStorage.getItem("slplayer-custom-rates");
       if (savedRates) setCustomRates(JSON.parse(savedRates));
 
+      const savedBudgets = localStorage.getItem("slplayer-budgets");
+      if (savedBudgets) setBudgetLimits(JSON.parse(savedBudgets));
+
       setIsLoaded(true);
 
       // --- Supabase Cloud Fetch & Realtime Sync ---
+      // Supabase is ALWAYS the source of truth. We always overwrite local state,
+      // even if the result is empty — this is what makes real-time deletions work.
       const fetchSupabaseData = async () => {
         try {
           const [txRes, walletRes, spendRes, budgetRes] = await Promise.all([
-            supabase.from("transactions").select("*").order("date", { ascending: false }),
-            supabase.from("wallets").select("*"),
-            supabase.from("wallet_spends").select("*"),
+            supabase.from("transactions").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+            supabase.from("wallets").select("*").order("created_at", { ascending: false }),
+            supabase.from("wallet_spends").select("*").order("created_at", { ascending: false }),
             supabase.from("budget_limits").select("*"),
           ]);
 
-          if (txRes.data && txRes.data.length > 0) {
-            const mappedTx: Transaction[] = txRes.data.map((row) => ({
+          // Always set from Supabase — even empty arrays clear stale local data
+          if (!txRes.error) {
+            const mappedTx: Transaction[] = (txRes.data ?? []).map((row) => ({
               id: row.id,
               merchant: row.merchant,
               categoryId: row.category_id,
@@ -133,8 +131,8 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
             setTransactions(mappedTx);
           }
 
-          if (walletRes.data && walletRes.data.length > 0) {
-            const mappedWallets: Wallet[] = walletRes.data.map((row) => ({
+          if (!walletRes.error) {
+            const mappedWallets: Wallet[] = (walletRes.data ?? []).map((row) => ({
               id: row.id,
               name: row.name,
               foreign_currency: row.foreign_currency,
@@ -147,8 +145,8 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
             setWallets(mappedWallets);
           }
 
-          if (spendRes.data && spendRes.data.length > 0) {
-            const mappedSpends: WalletSpend[] = spendRes.data.map((row) => ({
+          if (!spendRes.error) {
+            const mappedSpends: WalletSpend[] = (spendRes.data ?? []).map((row) => ({
               id: row.id,
               wallet_id: row.wallet_id,
               foreign_amount: parseFloat(row.foreign_amount),
@@ -159,7 +157,8 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
             setWalletSpends(mappedSpends);
           }
 
-          if (budgetRes.data && budgetRes.data.length > 0) {
+          if (!budgetRes.error && budgetRes.data && budgetRes.data.length > 0) {
+            // Budget limits intentionally keep local defaults if Supabase has none
             const mappedBudgets = budgetRes.data.map((row) => ({
               categoryId: row.category_id,
               limit: parseFloat(row.limit_amount),
@@ -167,10 +166,18 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
             setBudgetLimits(mappedBudgets);
           }
         } catch (err) {
-          console.warn("Supabase initial fetch warning:", err);
+          // Supabase is unreachable — fall back to localStorage as offline cache
+          console.warn("Supabase fetch failed, using localStorage fallback:", err);
+          const savedTx = localStorage.getItem("slplayer-transactions");
+          if (savedTx) try { setTransactions(JSON.parse(savedTx)); } catch(e) {}
+          const savedWallets = localStorage.getItem("slplayer-wallets");
+          if (savedWallets) try { setWallets(JSON.parse(savedWallets)); } catch(e) {}
+          const savedSpends = localStorage.getItem("slplayer-wallet-spends");
+          if (savedSpends) try { setWalletSpends(JSON.parse(savedSpends)); } catch(e) {}
         }
       };
 
+      syncQueue.startOnlineWatcher();
       fetchSupabaseData();
 
       // Realtime listener for cross-device sync (phone <-> desktop)
@@ -196,29 +203,10 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Settings only — these are local preferences, not cloud data
   useEffect(() => {
     if (isLoaded) localStorage.setItem("slplayer-custom-rates", JSON.stringify(customRates));
   }, [customRates, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("slplayer-wallets", JSON.stringify(wallets));
-  }, [wallets, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("slplayer-wallet-spends", JSON.stringify(walletSpends));
-  }, [walletSpends, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("slplayer-transactions", JSON.stringify(transactions));
-  }, [transactions, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("slplayer-budgets", JSON.stringify(budgetLimits));
-  }, [budgetLimits, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("slplayer-bills", JSON.stringify(bills));
-  }, [bills, isLoaded]);
 
   useEffect(() => {
     if (isLoaded) localStorage.setItem("slplayer-current-month", currentMonth.toISOString());
@@ -240,59 +228,14 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     );
   }, [accentColor, isLoaded]);
 
-  // --- Supabase Cloud Sync Effects ---
-  useEffect(() => {
-    if (!isLoaded || transactions.length === 0) return;
-    const dbPayload = transactions.map((t) => ({
-      id: t.id,
-      merchant: t.merchant,
-      category_id: t.categoryId,
-      amount: t.amount,
-      date: t.date,
-      time: t.time || "",
-      wallet_id: t.wallet_id || null,
-      foreign_amount: t.foreign_amount || null,
-      foreign_currency: t.foreign_currency || null,
-    }));
-    supabase.from("transactions").upsert(dbPayload).then(() => {}).catch(() => {});
-  }, [transactions, isLoaded]);
-
-  useEffect(() => {
-    if (!isLoaded || wallets.length === 0) return;
-    const dbPayload = wallets.map((w) => ({
-      id: w.id,
-      name: w.name,
-      foreign_currency: w.foreign_currency,
-      total_foreign_funded: w.total_foreign_funded,
-      remaining_foreign: w.remaining_foreign,
-      status: w.status,
-      created_at: w.created_at,
-      updated_at: w.updated_at,
-    }));
-    supabase.from("wallets").upsert(dbPayload).then(() => {}).catch(() => {});
-  }, [wallets, isLoaded]);
-
-  useEffect(() => {
-    if (!isLoaded || walletSpends.length === 0) return;
-    const dbPayload = walletSpends.map((s) => ({
-      id: s.id,
-      wallet_id: s.wallet_id,
-      foreign_amount: s.foreign_amount,
-      note: s.note || "",
-      category_tag: s.category_tag || null,
-      date: s.date,
-    }));
-    supabase.from("wallet_spends").upsert(dbPayload).then(() => {}).catch(() => {});
-  }, [walletSpends, isLoaded]);
-
-  useEffect(() => {
-    if (!isLoaded || budgetLimits.length === 0) return;
-    const dbPayload = budgetLimits.map((b) => ({
-      category_id: b.categoryId,
-      limit_amount: b.limit,
-    }));
-    supabase.from("budget_limits").upsert(dbPayload).then(() => {}).catch(() => {});
-  }, [budgetLimits, isLoaded]);
+  // Helper: upsert a single row to Supabase, queue offline if it fails
+  const upsertRow = (table: string, row: object, id: string) => {
+    supabase.from(table).upsert(row).then((res) => {
+      if (res.error) throw res.error;
+    }).catch(() => {
+      syncQueue.enqueue(table, "upsert", row, id);
+    });
+  };
 
   const addTransaction = (tx: Omit<Transaction, "id" | "time">) => {
     const timeStr = new Date().toLocaleTimeString("en-US", {
@@ -302,43 +245,39 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     });
 
     let walletId = tx.wallet_id;
-    
+    const nowStr = new Date().toISOString();
+
     // If it's a foreign currency transaction and no wallet_id is provided,
     // find or auto-create a wallet for that currency
     if (tx.foreign_currency && tx.foreign_currency !== "CAD" && !walletId) {
       const activeWallet = wallets.find(w => w.foreign_currency === tx.foreign_currency && w.status === "active");
-      
+
       if (activeWallet) {
-        // Link to existing wallet and update its balance
         walletId = activeWallet.id;
-        setWallets((prev) =>
-          prev.map((w) => {
-            if (w.id !== activeWallet.id) return w;
-            const amountDiff = tx.amount;
-            return {
-              ...w,
-              total_foreign_funded: amountDiff > 0 ? w.total_foreign_funded + amountDiff : w.total_foreign_funded,
-              remaining_foreign: w.remaining_foreign + amountDiff,
-              updated_at: new Date().toISOString(),
-            };
-          })
-        );
+        const amountDiff = tx.amount;
+        const updatedWallet = {
+          ...activeWallet,
+          total_foreign_funded: amountDiff > 0 ? activeWallet.total_foreign_funded + amountDiff : activeWallet.total_foreign_funded,
+          remaining_foreign: activeWallet.remaining_foreign + amountDiff,
+          updated_at: nowStr,
+        };
+        setWallets((prev) => prev.map((w) => w.id === activeWallet.id ? updatedWallet : w));
+        upsertRow("wallets", { id: updatedWallet.id, name: updatedWallet.name, foreign_currency: updatedWallet.foreign_currency, total_foreign_funded: updatedWallet.total_foreign_funded, remaining_foreign: updatedWallet.remaining_foreign, status: updatedWallet.status, created_at: updatedWallet.created_at, updated_at: updatedWallet.updated_at }, updatedWallet.id);
       } else {
-        // Auto-create a new wallet for this currency
         const newWalletId = `wallet-${Math.random().toString(36).substring(2, 9)}`;
-        const nowStr = new Date().toISOString();
-        const initialAmount = Math.abs(tx.amount); // use absolute amount as initial balance
+        const initialAmount = Math.abs(tx.amount);
         const newWallet: Wallet = {
           id: newWalletId,
           name: tx.foreign_currency,
           foreign_currency: tx.foreign_currency,
           total_foreign_funded: tx.amount > 0 ? initialAmount : 0,
-          remaining_foreign: tx.amount, // positive for income, negative for expense
+          remaining_foreign: tx.amount,
           status: "active",
           created_at: nowStr,
           updated_at: nowStr,
         };
         setWallets((prev) => [newWallet, ...prev]);
+        upsertRow("wallets", { id: newWallet.id, name: newWallet.name, foreign_currency: newWallet.foreign_currency, total_foreign_funded: newWallet.total_foreign_funded, remaining_foreign: newWallet.remaining_foreign, status: newWallet.status, created_at: newWallet.created_at, updated_at: newWallet.updated_at }, newWallet.id);
         walletId = newWalletId;
       }
     }
@@ -350,41 +289,40 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       time: timeStr,
     };
     setTransactions((prev) => [newTx, ...prev]);
+    upsertRow("transactions", { id: newTx.id, merchant: newTx.merchant, category_id: newTx.categoryId, amount: newTx.amount, date: newTx.date, time: newTx.time, wallet_id: newTx.wallet_id || null, foreign_amount: newTx.foreign_amount || null, foreign_currency: newTx.foreign_currency || null }, newTx.id);
   };
 
   const deleteTransaction = (id: string) => {
     const tx = transactions.find((t) => t.id === id);
     if (tx && tx.wallet_id) {
+      const nowStr = new Date().toISOString();
       if (tx.categoryId === "travel") {
         setWallets((prev) =>
           prev.map((w) => {
             if (w.id !== tx.wallet_id) return w;
-            return {
-              ...w,
-              total_foreign_funded: Math.max(0, w.total_foreign_funded - (tx.foreign_amount || 0)),
-              remaining_foreign: w.remaining_foreign - (tx.foreign_amount || 0),
-              updated_at: new Date().toISOString(),
-            };
+            const updated = { ...w, total_foreign_funded: Math.max(0, w.total_foreign_funded - (tx.foreign_amount || 0)), remaining_foreign: w.remaining_foreign - (tx.foreign_amount || 0), updated_at: nowStr };
+            upsertRow("wallets", { id: updated.id, name: updated.name, foreign_currency: updated.foreign_currency, total_foreign_funded: updated.total_foreign_funded, remaining_foreign: updated.remaining_foreign, status: updated.status, created_at: updated.created_at, updated_at: updated.updated_at }, updated.id);
+            return updated;
           })
         );
       } else {
-        // Quick Add transaction linked to wallet
         setWallets((prev) =>
           prev.map((w) => {
             if (w.id !== tx.wallet_id) return w;
             const amountDiff = tx.amount;
-            return {
-              ...w,
-              total_foreign_funded: amountDiff > 0 ? Math.max(0, w.total_foreign_funded - amountDiff) : w.total_foreign_funded,
-              remaining_foreign: w.remaining_foreign - amountDiff,
-              updated_at: new Date().toISOString(),
-            };
+            const updated = { ...w, total_foreign_funded: amountDiff > 0 ? Math.max(0, w.total_foreign_funded - amountDiff) : w.total_foreign_funded, remaining_foreign: w.remaining_foreign - amountDiff, updated_at: nowStr };
+            upsertRow("wallets", { id: updated.id, name: updated.name, foreign_currency: updated.foreign_currency, total_foreign_funded: updated.total_foreign_funded, remaining_foreign: updated.remaining_foreign, status: updated.status, created_at: updated.created_at, updated_at: updated.updated_at }, updated.id);
+            return updated;
           })
         );
       }
     }
-    setTransactions((prev) => prev.filter((tx) => tx.id !== id));
-    supabase.from("transactions").delete().eq("id", id).then(() => {}).catch(() => {});
+    setTransactions((prev) => prev.filter((t) => t.id !== id));
+    supabase.from("transactions").delete().eq("id", id).then((res) => {
+      if (res.error) throw res.error;
+    }).catch(() => {
+      syncQueue.enqueue("transactions", "delete", null, id);
+    });
   };
 
   const addCustomCurrency = (code: string, rate: number) => {
@@ -422,11 +360,10 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       updated_at: nowStr,
     };
     setWallets((prev) => [newWallet, ...prev]);
+    upsertRow("wallets", { id: newWallet.id, name: newWallet.name, foreign_currency: newWallet.foreign_currency, total_foreign_funded: newWallet.total_foreign_funded, remaining_foreign: newWallet.remaining_foreign, status: newWallet.status, created_at: newWallet.created_at, updated_at: newWallet.updated_at }, newWallet.id);
 
-    // Convert source currency baseCost to CAD equivalent for transaction recording
     const rate = allRates[sourceCurrency] || 1;
     const baseCostInCAD = baseCost / rate;
-
     addTransaction({
       merchant: name,
       categoryId: "travel",
@@ -446,22 +383,13 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
   ) => {
     const wallet = wallets.find((w) => w.id === walletId);
     if (!wallet) return;
-    setWallets((prev) =>
-      prev.map((w) => {
-        if (w.id !== walletId) return w;
-        return {
-          ...w,
-          total_foreign_funded: w.total_foreign_funded + foreignAmount,
-          remaining_foreign: w.remaining_foreign + foreignAmount,
-          updated_at: new Date().toISOString(),
-        };
-      })
-    );
+    const nowStr = new Date().toISOString();
+    const updatedWallet = { ...wallet, total_foreign_funded: wallet.total_foreign_funded + foreignAmount, remaining_foreign: wallet.remaining_foreign + foreignAmount, updated_at: nowStr };
+    setWallets((prev) => prev.map((w) => w.id !== walletId ? w : updatedWallet));
+    upsertRow("wallets", { id: updatedWallet.id, name: updatedWallet.name, foreign_currency: updatedWallet.foreign_currency, total_foreign_funded: updatedWallet.total_foreign_funded, remaining_foreign: updatedWallet.remaining_foreign, status: updatedWallet.status, created_at: updatedWallet.created_at, updated_at: updatedWallet.updated_at }, updatedWallet.id);
 
-    // Convert source currency baseCost to CAD equivalent for transaction recording
     const rate = allRates[sourceCurrency] || 1;
     const baseCostInCAD = baseCost / rate;
-
     addTransaction({
       merchant: wallet.name,
       categoryId: "travel",
@@ -474,8 +402,14 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
   };
 
   const archiveWallet = (id: string) => {
+    const nowStr = new Date().toISOString();
     setWallets((prev) =>
-      prev.map((w) => (w.id === id ? { ...w, status: "archived", updated_at: new Date().toISOString() } : w))
+      prev.map((w) => {
+        if (w.id !== id) return w;
+        const updated = { ...w, status: "archived" as const, updated_at: nowStr };
+        upsertRow("wallets", { id: updated.id, name: updated.name, foreign_currency: updated.foreign_currency, total_foreign_funded: updated.total_foreign_funded, remaining_foreign: updated.remaining_foreign, status: updated.status, created_at: updated.created_at, updated_at: updated.updated_at }, updated.id);
+        return updated;
+      })
     );
   };
 
@@ -487,6 +421,15 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     }
     setWallets((prev) => prev.filter((w) => w.id !== id));
     setWalletSpends((prev) => prev.filter((s) => s.wallet_id !== id));
+    supabase.from("wallet_spends").delete().eq("wallet_id", id).then((res) => {
+      if (res.error) throw res.error;
+      supabase.from("wallets").delete().eq("id", id).then((res2) => {
+        if (res2.error) throw res2.error;
+      }).catch(() => syncQueue.enqueue("wallets", "delete", null, id));
+    }).catch(() => {
+      syncQueue.enqueue("wallet_spends", "delete", null, id);
+      syncQueue.enqueue("wallets", "delete", null, id);
+    });
   };
 
   const convertWallet = (sourceCurrency: string, targetCurrency: string, amount: number, rate: number) => {
@@ -498,23 +441,15 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     const nowStr = new Date().toISOString();
     const dateStr = nowStr.split("T")[0];
 
-    // Deduct from source wallet
-    setWallets((prev) => prev.map((w) => {
-      if (w.id === activeSourceWallet.id) {
-        return {
-          ...w,
-          remaining_foreign: w.remaining_foreign - amount,
-          updated_at: nowStr,
-        };
-      }
-      return w;
-    }));
+    const updatedSource = { ...activeSourceWallet, remaining_foreign: activeSourceWallet.remaining_foreign - amount, updated_at: nowStr };
+    setWallets((prev) => prev.map((w) => w.id === activeSourceWallet.id ? updatedSource : w));
+    upsertRow("wallets", { id: updatedSource.id, name: updatedSource.name, foreign_currency: updatedSource.foreign_currency, total_foreign_funded: updatedSource.total_foreign_funded, remaining_foreign: updatedSource.remaining_foreign, status: updatedSource.status, created_at: updatedSource.created_at, updated_at: updatedSource.updated_at }, updatedSource.id);
 
     const expenseTx: Transaction = {
       id: `tx-${Math.random().toString(36).substring(2, 9)}`,
       merchant: `Conversion to ${targetCurrency}`,
       categoryId: "other",
-      amount: -amount, // We don't convert to CAD here because this is fully within foreign wallets, but we can set it to negative foreign amount.
+      amount: -amount,
       date: dateStr,
       time: timeStr,
       wallet_id: activeSourceWallet.id,
@@ -522,36 +457,19 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       foreign_currency: sourceCurrency,
     };
 
-    // Add to target wallet
     let targetWalletId: string | undefined;
     const activeTargetWallet = wallets.find(w => w.foreign_currency === targetCurrency && w.status === "active");
 
     if (activeTargetWallet) {
       targetWalletId = activeTargetWallet.id;
-      setWallets((prev) => prev.map((w) => {
-        if (w.id === activeTargetWallet.id) {
-          return {
-            ...w,
-            total_foreign_funded: w.total_foreign_funded + targetAmount,
-            remaining_foreign: w.remaining_foreign + targetAmount,
-            updated_at: nowStr,
-          };
-        }
-        return w;
-      }));
+      const updatedTarget = { ...activeTargetWallet, total_foreign_funded: activeTargetWallet.total_foreign_funded + targetAmount, remaining_foreign: activeTargetWallet.remaining_foreign + targetAmount, updated_at: nowStr };
+      setWallets((prev) => prev.map((w) => w.id === activeTargetWallet.id ? updatedTarget : w));
+      upsertRow("wallets", { id: updatedTarget.id, name: updatedTarget.name, foreign_currency: updatedTarget.foreign_currency, total_foreign_funded: updatedTarget.total_foreign_funded, remaining_foreign: updatedTarget.remaining_foreign, status: updatedTarget.status, created_at: updatedTarget.created_at, updated_at: updatedTarget.updated_at }, updatedTarget.id);
     } else {
       targetWalletId = `wallet-${Math.random().toString(36).substring(2, 9)}`;
-      const newWallet: Wallet = {
-        id: targetWalletId,
-        name: targetCurrency,
-        foreign_currency: targetCurrency,
-        total_foreign_funded: targetAmount,
-        remaining_foreign: targetAmount,
-        status: "active",
-        created_at: nowStr,
-        updated_at: nowStr,
-      };
+      const newWallet: Wallet = { id: targetWalletId, name: targetCurrency, foreign_currency: targetCurrency, total_foreign_funded: targetAmount, remaining_foreign: targetAmount, status: "active", created_at: nowStr, updated_at: nowStr };
       setWallets((prev) => [newWallet, ...prev]);
+      upsertRow("wallets", { id: newWallet.id, name: newWallet.name, foreign_currency: newWallet.foreign_currency, total_foreign_funded: newWallet.total_foreign_funded, remaining_foreign: newWallet.remaining_foreign, status: newWallet.status, created_at: newWallet.created_at, updated_at: newWallet.updated_at }, newWallet.id);
     }
 
     const incomeTx: Transaction = {
@@ -567,27 +485,23 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     };
 
     setTransactions((prev) => [incomeTx, expenseTx, ...prev]);
+    upsertRow("transactions", { id: expenseTx.id, merchant: expenseTx.merchant, category_id: expenseTx.categoryId, amount: expenseTx.amount, date: expenseTx.date, time: expenseTx.time, wallet_id: expenseTx.wallet_id || null, foreign_amount: expenseTx.foreign_amount || null, foreign_currency: expenseTx.foreign_currency || null }, expenseTx.id);
+    upsertRow("transactions", { id: incomeTx.id, merchant: incomeTx.merchant, category_id: incomeTx.categoryId, amount: incomeTx.amount, date: incomeTx.date, time: incomeTx.time, wallet_id: incomeTx.wallet_id || null, foreign_amount: incomeTx.foreign_amount || null, foreign_currency: incomeTx.foreign_currency || null }, incomeTx.id);
   };
 
   const logSpend = (walletId: string, foreignAmount: number, note: string, categoryTag: string, date: string) => {
     const newSpendId = `spend-${Math.random().toString(36).substring(2, 9)}`;
-    const newSpend: WalletSpend = {
-      id: newSpendId,
-      wallet_id: walletId,
-      foreign_amount: foreignAmount,
-      note,
-      category_tag: categoryTag,
-      date,
-    };
+    const nowStr = new Date().toISOString();
+    const newSpend: WalletSpend = { id: newSpendId, wallet_id: walletId, foreign_amount: foreignAmount, note, category_tag: categoryTag, date };
     setWalletSpends((prev) => [newSpend, ...prev]);
+    upsertRow("wallet_spends", { id: newSpend.id, wallet_id: newSpend.wallet_id, foreign_amount: newSpend.foreign_amount, note: newSpend.note, category_tag: newSpend.category_tag || null, date: newSpend.date }, newSpend.id);
+
     setWallets((prev) =>
       prev.map((w) => {
         if (w.id !== walletId) return w;
-        return {
-          ...w,
-          remaining_foreign: w.remaining_foreign - foreignAmount,
-          updated_at: new Date().toISOString(),
-        };
+        const updated = { ...w, remaining_foreign: w.remaining_foreign - foreignAmount, updated_at: nowStr };
+        upsertRow("wallets", { id: updated.id, name: updated.name, foreign_currency: updated.foreign_currency, total_foreign_funded: updated.total_foreign_funded, remaining_foreign: updated.remaining_foreign, status: updated.status, created_at: updated.created_at, updated_at: updated.updated_at }, updated.id);
+        return updated;
       })
     );
   };
@@ -596,27 +510,17 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     const spend = walletSpends.find((s) => s.id === id);
     if (!spend) return;
     const delta = newForeignAmount - spend.foreign_amount;
-    setWalletSpends((prev) =>
-      prev.map((s) =>
-        s.id === id
-          ? {
-              ...s,
-              foreign_amount: newForeignAmount,
-              note: newNote,
-              category_tag: newCategoryTag,
-              date: newDate,
-            }
-          : s
-      )
-    );
+    const nowStr = new Date().toISOString();
+    const updatedSpend = { ...spend, foreign_amount: newForeignAmount, note: newNote, category_tag: newCategoryTag, date: newDate };
+    setWalletSpends((prev) => prev.map((s) => s.id === id ? updatedSpend : s));
+    upsertRow("wallet_spends", { id: updatedSpend.id, wallet_id: updatedSpend.wallet_id, foreign_amount: updatedSpend.foreign_amount, note: updatedSpend.note, category_tag: updatedSpend.category_tag || null, date: updatedSpend.date }, updatedSpend.id);
+
     setWallets((prev) =>
       prev.map((w) => {
         if (w.id !== spend.wallet_id) return w;
-        return {
-          ...w,
-          remaining_foreign: w.remaining_foreign - delta,
-          updated_at: new Date().toISOString(),
-        };
+        const updated = { ...w, remaining_foreign: w.remaining_foreign - delta, updated_at: nowStr };
+        upsertRow("wallets", { id: updated.id, name: updated.name, foreign_currency: updated.foreign_currency, total_foreign_funded: updated.total_foreign_funded, remaining_foreign: updated.remaining_foreign, status: updated.status, created_at: updated.created_at, updated_at: updated.updated_at }, updated.id);
+        return updated;
       })
     );
   };
@@ -624,30 +528,55 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
   const deleteSpend = (id: string) => {
     const spend = walletSpends.find((s) => s.id === id);
     if (!spend) return;
+    const nowStr = new Date().toISOString();
     setWalletSpends((prev) => prev.filter((s) => s.id !== id));
     setWallets((prev) =>
       prev.map((w) => {
         if (w.id !== spend.wallet_id) return w;
-        return {
-          ...w,
-          remaining_foreign: w.remaining_foreign + spend.foreign_amount,
-          updated_at: new Date().toISOString(),
-        };
+        const updated = { ...w, remaining_foreign: w.remaining_foreign + spend.foreign_amount, updated_at: nowStr };
+        upsertRow("wallets", { id: updated.id, name: updated.name, foreign_currency: updated.foreign_currency, total_foreign_funded: updated.total_foreign_funded, remaining_foreign: updated.remaining_foreign, status: updated.status, created_at: updated.created_at, updated_at: updated.updated_at }, updated.id);
+        return updated;
       })
     );
-    supabase.from("wallet_spends").delete().eq("id", id).then(() => {}).catch(() => {});
+    supabase.from("wallet_spends").delete().eq("id", id).then((res) => {
+      if (res.error) throw res.error;
+    }).catch(() => syncQueue.enqueue("wallet_spends", "delete", null, id));
   };
 
   const updateBudget = (categoryId: string, limit: number) => {
     setBudgetLimits((prev) => {
       const exists = prev.some((b) => b.categoryId === categoryId);
-      if (exists) {
-        return prev.map((b) =>
-          b.categoryId === categoryId ? { ...b, limit } : b,
-        );
-      }
-      return [...prev, { categoryId, limit }];
+      const next = exists
+        ? prev.map((b) => b.categoryId === categoryId ? { ...b, limit } : b)
+        : [...prev, { categoryId, limit }];
+      upsertRow("budget_limits", { category_id: categoryId, limit_amount: limit }, categoryId);
+      return next;
     });
+  };
+
+  const resetApp = async () => {
+    // 1. Wipe Supabase — wallet_spends first (FK), then wallets, then rest
+    await supabase.from("wallet_spends").delete().neq("id", "__never__");
+    await supabase.from("wallets").delete().neq("id", "__never__");
+    await supabase.from("transactions").delete().neq("id", "__never__");
+    await supabase.from("budget_limits").delete().neq("category_id", "__never__");
+
+    // 2. Wipe every slplayer-* key from localStorage
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("slplayer-"))
+      .forEach((k) => localStorage.removeItem(k));
+
+    // 3. Reset React state to factory defaults
+    setTransactions([]);
+    setWallets([]);
+    setWalletSpends([]);
+    setBudgetLimits(DEFAULT_BUDGET_LIMITS);
+    setCustomRates({});
+
+    // 4. Force a hard reload to kill websocket listeners and ensure clean slate
+    if (typeof window !== "undefined") {
+      window.location.href = "/";
+    }
   };
 
   const setPrivacyMode = (on: boolean) => {
@@ -719,6 +648,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
         setCurrentMonth,
         setQuickAddOpen,
         setConverterOpen,
+        resetApp,
       }}
     >
       {children}

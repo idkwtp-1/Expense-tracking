@@ -11,7 +11,10 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { MobileShell } from "../components/expense/MobileShell";
-import { ExpenseProvider } from "../lib/store";
+import { ExpenseProvider } from "@/lib/store";
+import { supabase } from "@/lib/supabase";
+import { AuthScreen } from "@/components/auth/AuthScreen";
+import type { Session } from "@supabase/supabase-js";
 
 function NotFoundComponent() {
   return (
@@ -130,30 +133,81 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const [session, setSession] = useState<Session | null>(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
 
-  // One-time migration: clear old mock data (version key ensures single run)
+  // 1. Monitor Supabase Auth Session
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoadingAuth(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setLoadingAuth(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 2. Migration v7 & Service Worker Registration
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const isMigrated = localStorage.getItem("slplayer-migrated-v4");
+      const isMigrated = localStorage.getItem("slplayer-migrated-v7");
       if (!isMigrated) {
-        Object.keys(localStorage).forEach((key) => {
-          if (key.startsWith("slplayer-")) {
-            localStorage.removeItem(key);
-          }
-        });
+        localStorage.removeItem("slplayer-transactions");
+        localStorage.removeItem("slplayer-wallets");
+        localStorage.removeItem("slplayer-wallet-spends");
+        localStorage.removeItem("slplayer-sync-queue");
         localStorage.setItem("slplayer-migrated-v4", "true");
-        window.location.reload();
+        localStorage.setItem("slplayer-migrated-v5", "true");
+        localStorage.setItem("slplayer-migrated-v6", "true");
+        localStorage.setItem("slplayer-migrated-v7", "true");
       }
 
-      // Register Service Worker for PWA offline capability
-      if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
-        navigator.serviceWorker.register("/sw.js").catch((err) => {
-          console.error("Service worker registration failed:", err);
-        });
+      if ("serviceWorker" in navigator) {
+        if (process.env.NODE_ENV === "production") {
+          navigator.serviceWorker.register("/sw.js").then((reg) => {
+            reg.update();
+          }).catch((err) => {
+            console.error("Service worker registration failed:", err);
+          });
+        } else {
+          // Scorched earth in development: kill any rogue service workers to prevent cache traps
+          navigator.serviceWorker.getRegistrations().then((registrations) => {
+            for (const reg of registrations) {
+              reg.unregister();
+              console.log("Unregistered rogue service worker in dev mode.");
+            }
+          });
+        }
       }
     }
   }, []);
 
+  // 3. Render Loading Spinner while restoring auth session
+  if (loadingAuth) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-[#09090b]">
+        <div className="flex flex-col items-center gap-3">
+          <div
+            className="w-8 h-8 rounded-full border-2 border-violet-500/30 border-t-violet-500 animate-spin"
+          />
+          <p className="text-xs text-zinc-500">Connecting securely…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 4. Render AuthScreen if unauthenticated
+  if (!session) {
+    return <AuthScreen />;
+  }
+
+  // 5. Render App Shell if authenticated
   return (
     <QueryClientProvider client={queryClient}>
       <ExpenseProvider>

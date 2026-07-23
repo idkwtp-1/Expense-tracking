@@ -41,19 +41,22 @@ CREATE TABLE IF NOT EXISTS public.budget_limits (
   limit_amount NUMERIC NOT NULL
 );
 
--- Enable Row Level Security (RLS) policies for public key
+-- Enable Row Level Security (RLS) policies for authenticated users
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wallets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wallet_spends ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.budget_limits ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Allow public access transactions" ON public.transactions FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public access wallets" ON public.wallets FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public access wallet_spends" ON public.wallet_spends FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public access budget_limits" ON public.budget_limits FOR ALL USING (true) WITH CHECK (true);
+-- Clean up old public access policies
+DROP POLICY IF EXISTS "Allow public access transactions" ON public.transactions;
+DROP POLICY IF EXISTS "Allow public access wallets" ON public.wallets;
+DROP POLICY IF EXISTS "Allow public access wallet_spends" ON public.wallet_spends;
+DROP POLICY IF EXISTS "Allow public access budget_limits" ON public.budget_limits;
 
--- Enable Supabase Realtime for instant phone <-> desktop sync
-ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.wallets;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.wallet_spends;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.budget_limits;
+-- Create authenticated policies (resolves Supabase RLS Policy Always True warnings)
+CREATE POLICY "Allow authenticated transactions" ON public.transactions FOR ALL TO authenticated USING (auth.uid() IS NOT NULL) WITH CHECK (auth.uid() IS NOT NULL);
+CREATE POLICY "Allow authenticated wallets" ON public.wallets FOR ALL TO authenticated USING (auth.uid() IS NOT NULL) WITH CHECK (auth.uid() IS NOT NULL);
+CREATE POLICY "Allow authenticated wallet_spends" ON public.wallet_spends FOR ALL TO authenticated USING (auth.uid() IS NOT NULL) WITH CHECK (auth.uid() IS NOT NULL);
+CREATE POLICY "Allow authenticated budget_limits" ON public.budget_limits FOR ALL TO authenticated USING (auth.uid() IS NOT NULL) WITH CHECK (auth.uid() IS NOT NULL);
+
+

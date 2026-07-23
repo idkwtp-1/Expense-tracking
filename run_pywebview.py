@@ -152,7 +152,7 @@ def main():
         window.events.before_show += set_custom_icon
 
         # Start the GUI event loop — blocks here until the window is closed
-        webview.start(debug=False)
+        webview.start(debug=False, private_mode=False)
 
     finally:
         # --- 4. Clean up: kill the Vite server when the window closes ---
