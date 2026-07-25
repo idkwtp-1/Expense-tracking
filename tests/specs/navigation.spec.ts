@@ -76,6 +76,7 @@ test.describe("App Shell & Sidebar Navigation - Tier 2", () => {
 
   test("T2-F1-04: Custom Scrollbar Check", async ({ page }) => {
     await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
     const body = page.locator("body");
     const overflowX = await body.evaluate(
       (el) => window.getComputedStyle(el).overflowX,

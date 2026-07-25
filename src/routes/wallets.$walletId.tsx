@@ -80,7 +80,7 @@ function WalletDetailPage() {
   }, [walletSpends, transactions, walletId]);
 
   const formatAmt = (amt: number) => {
-    return amt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return amt.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
 
   // Funding transactions linked to this wallet (either travel-funded or income transactions)

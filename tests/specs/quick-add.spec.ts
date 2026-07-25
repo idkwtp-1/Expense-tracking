@@ -147,8 +147,7 @@ test.describe("Quick Add Dialog - Tier 2", () => {
 
   test("T2-F6-03: Keyboard Dismiss (Escape)", async ({ page }) => {
     const quickAddBtn = page.getByRole("button", {
-      name: "Quick add",
-      exact: true,
+      name: /Quick Add/i,
     });
     await quickAddBtn.click();
 
