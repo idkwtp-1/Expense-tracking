@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import { Transaction, Budget, Bill, Wallet, WalletSpend, RATES } from "./types";
 import { isSameMonth, parseISO } from "date-fns";
+import { supabase } from "./supabase";
 
 export interface ExpenseContextType {
   transactions: Transaction[];
@@ -78,6 +79,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     return Object.keys(allRates);
   }, [allRates]);
 
+  // Initial Load from LocalStorage & Supabase + Realtime Subscription
   useEffect(() => {
     if (typeof window !== "undefined") {
       const savedTx = localStorage.getItem("slplayer-transactions");
@@ -86,11 +88,11 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       const savedBudgets = localStorage.getItem("slplayer-budgets");
       if (savedBudgets) setBudgetLimits(JSON.parse(savedBudgets));
 
-      const savedBills = localStorage.getItem("slplayer-bills");
-      if (savedBills) {
-        // Since we don't have setBills exported or easily available if it's unused,
-        // we'll just ignore for now as bills are static or not used in this app.
-      }
+      const savedWallets = localStorage.getItem("slplayer-wallets");
+      if (savedWallets) setWallets(JSON.parse(savedWallets));
+
+      const savedSpends = localStorage.getItem("slplayer-wallet-spends");
+      if (savedSpends) setWalletSpends(JSON.parse(savedSpends));
 
       const savedMonth = localStorage.getItem("slplayer-current-month");
       if (savedMonth) _setCurrentMonth(new Date(savedMonth));
@@ -101,16 +103,96 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       const savedAccent = localStorage.getItem("slplayer-accent");
       if (savedAccent) _setAccentColor(savedAccent);
 
-      const savedWallets = localStorage.getItem("slplayer-wallets");
-      if (savedWallets) setWallets(JSON.parse(savedWallets));
-
-      const savedSpends = localStorage.getItem("slplayer-wallet-spends");
-      if (savedSpends) setWalletSpends(JSON.parse(savedSpends));
-
       const savedRates = localStorage.getItem("slplayer-custom-rates");
       if (savedRates) setCustomRates(JSON.parse(savedRates));
 
       setIsLoaded(true);
+
+      // --- Supabase Cloud Fetch & Realtime Sync ---
+      const fetchSupabaseData = async () => {
+        try {
+          const [txRes, walletRes, spendRes, budgetRes] = await Promise.all([
+            supabase.from("transactions").select("*").order("date", { ascending: false }),
+            supabase.from("wallets").select("*"),
+            supabase.from("wallet_spends").select("*"),
+            supabase.from("budget_limits").select("*"),
+          ]);
+
+          if (txRes.data && txRes.data.length > 0) {
+            const mappedTx: Transaction[] = txRes.data.map((row) => ({
+              id: row.id,
+              merchant: row.merchant,
+              categoryId: row.category_id,
+              amount: parseFloat(row.amount),
+              date: row.date,
+              time: row.time || "",
+              wallet_id: row.wallet_id || undefined,
+              foreign_amount: row.foreign_amount ? parseFloat(row.foreign_amount) : undefined,
+              foreign_currency: row.foreign_currency || undefined,
+            }));
+            setTransactions(mappedTx);
+          }
+
+          if (walletRes.data && walletRes.data.length > 0) {
+            const mappedWallets: Wallet[] = walletRes.data.map((row) => ({
+              id: row.id,
+              name: row.name,
+              foreign_currency: row.foreign_currency,
+              total_foreign_funded: parseFloat(row.total_foreign_funded),
+              remaining_foreign: parseFloat(row.remaining_foreign),
+              status: row.status as "active" | "archived",
+              created_at: row.created_at,
+              updated_at: row.updated_at,
+            }));
+            setWallets(mappedWallets);
+          }
+
+          if (spendRes.data && spendRes.data.length > 0) {
+            const mappedSpends: WalletSpend[] = spendRes.data.map((row) => ({
+              id: row.id,
+              wallet_id: row.wallet_id,
+              foreign_amount: parseFloat(row.foreign_amount),
+              note: row.note || "",
+              category_tag: row.category_tag || undefined,
+              date: row.date,
+            }));
+            setWalletSpends(mappedSpends);
+          }
+
+          if (budgetRes.data && budgetRes.data.length > 0) {
+            const mappedBudgets = budgetRes.data.map((row) => ({
+              categoryId: row.category_id,
+              limit: parseFloat(row.limit_amount),
+            }));
+            setBudgetLimits(mappedBudgets);
+          }
+        } catch (err) {
+          console.warn("Supabase initial fetch warning:", err);
+        }
+      };
+
+      fetchSupabaseData();
+
+      // Realtime listener for cross-device sync (phone <-> desktop)
+      const channel = supabase
+        .channel("db-realtime-sync")
+        .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, () => {
+          fetchSupabaseData();
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "wallets" }, () => {
+          fetchSupabaseData();
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "wallet_spends" }, () => {
+          fetchSupabaseData();
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "budget_limits" }, () => {
+          fetchSupabaseData();
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
     }
   }, []);
 
@@ -157,6 +239,60 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       `rgba(${r}, ${g}, ${b}, 0.12)`,
     );
   }, [accentColor, isLoaded]);
+
+  // --- Supabase Cloud Sync Effects ---
+  useEffect(() => {
+    if (!isLoaded || transactions.length === 0) return;
+    const dbPayload = transactions.map((t) => ({
+      id: t.id,
+      merchant: t.merchant,
+      category_id: t.categoryId,
+      amount: t.amount,
+      date: t.date,
+      time: t.time || "",
+      wallet_id: t.wallet_id || null,
+      foreign_amount: t.foreign_amount || null,
+      foreign_currency: t.foreign_currency || null,
+    }));
+    supabase.from("transactions").upsert(dbPayload).then(() => {}).catch(() => {});
+  }, [transactions, isLoaded]);
+
+  useEffect(() => {
+    if (!isLoaded || wallets.length === 0) return;
+    const dbPayload = wallets.map((w) => ({
+      id: w.id,
+      name: w.name,
+      foreign_currency: w.foreign_currency,
+      total_foreign_funded: w.total_foreign_funded,
+      remaining_foreign: w.remaining_foreign,
+      status: w.status,
+      created_at: w.created_at,
+      updated_at: w.updated_at,
+    }));
+    supabase.from("wallets").upsert(dbPayload).then(() => {}).catch(() => {});
+  }, [wallets, isLoaded]);
+
+  useEffect(() => {
+    if (!isLoaded || walletSpends.length === 0) return;
+    const dbPayload = walletSpends.map((s) => ({
+      id: s.id,
+      wallet_id: s.wallet_id,
+      foreign_amount: s.foreign_amount,
+      note: s.note || "",
+      category_tag: s.category_tag || null,
+      date: s.date,
+    }));
+    supabase.from("wallet_spends").upsert(dbPayload).then(() => {}).catch(() => {});
+  }, [walletSpends, isLoaded]);
+
+  useEffect(() => {
+    if (!isLoaded || budgetLimits.length === 0) return;
+    const dbPayload = budgetLimits.map((b) => ({
+      category_id: b.categoryId,
+      limit_amount: b.limit,
+    }));
+    supabase.from("budget_limits").upsert(dbPayload).then(() => {}).catch(() => {});
+  }, [budgetLimits, isLoaded]);
 
   const addTransaction = (tx: Omit<Transaction, "id" | "time">) => {
     const timeStr = new Date().toLocaleTimeString("en-US", {
@@ -248,6 +384,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       }
     }
     setTransactions((prev) => prev.filter((tx) => tx.id !== id));
+    supabase.from("transactions").delete().eq("id", id).then(() => {}).catch(() => {});
   };
 
   const addCustomCurrency = (code: string, rate: number) => {
@@ -498,6 +635,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
         };
       })
     );
+    supabase.from("wallet_spends").delete().eq("id", id).then(() => {}).catch(() => {});
   };
 
   const updateBudget = (categoryId: string, limit: number) => {
