@@ -92,8 +92,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         },
         { property: "og:type", content: "website" },
         { name: "twitter:card", content: "summary" },
+        { name: "theme-color", content: "#0e0e10" },
+        { name: "mobile-web-app-capable", content: "yes" },
+        { name: "apple-mobile-web-app-capable", content: "yes" },
+        { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
+        { name: "apple-mobile-web-app-title", content: "Wallet" },
       ],
       links: [
+        { rel: "manifest", href: "/manifest.json" },
+        { rel: "apple-touch-icon", href: "/icons/icon-192.png" },
         {
           rel: "stylesheet",
           href: appCss,
@@ -146,6 +153,13 @@ function RootComponent() {
         });
         localStorage.setItem("slplayer-migrated-v4", "true");
         window.location.reload();
+      }
+
+      // Register Service Worker for PWA offline capability
+      if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+        navigator.serviceWorker.register("/sw.js").catch((err) => {
+          console.error("Service worker registration failed:", err);
+        });
       }
     }
   }, []);
