@@ -58,7 +58,7 @@ test.describe("App Shell & Sidebar Navigation - Tier 2", () => {
 
   test("T2-F1-02: Keyboard Nav Focus Rings", async ({ page }) => {
     await page.goto("/");
-    // Press Tab repeatedly to cycle sidebar items
+    await page.locator("a, button").first().waitFor({ state: "visible" });
     await page.keyboard.press("Tab");
     const focused = page.locator(":focus");
     await expect(focused).toBeVisible();
