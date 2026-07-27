@@ -236,7 +236,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
 
   // Helper: upsert a single row to Supabase, queue offline if it fails
   const upsertRow = (table: string, row: object, id: string) => {
-    supabase.from(table).upsert(row).then((res) => {
+    Promise.resolve(supabase.from(table).upsert(row)).then((res) => {
       if (res.error) throw res.error;
     }).catch(() => {
       syncQueue.enqueue(table, "upsert", row, id);
@@ -326,7 +326,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
       }
     }
     setTransactions((prev) => prev.filter((t) => t.id !== id));
-    supabase.from("transactions").delete().eq("id", id).then((res) => {
+    Promise.resolve(supabase.from("transactions").delete().eq("id", id)).then((res) => {
       if (res.error) throw res.error;
     }).catch(() => {
       syncQueue.enqueue("transactions", "delete", null, id);
@@ -429,9 +429,9 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
     }
     setWallets((prev) => prev.filter((w) => w.id !== id));
     setWalletSpends((prev) => prev.filter((s) => s.wallet_id !== id));
-    supabase.from("wallet_spends").delete().eq("wallet_id", id).then((res) => {
+    Promise.resolve(supabase.from("wallet_spends").delete().eq("wallet_id", id)).then((res) => {
       if (res.error) throw res.error;
-      supabase.from("wallets").delete().eq("id", id).then((res2) => {
+      Promise.resolve(supabase.from("wallets").delete().eq("id", id)).then((res2) => {
         if (res2.error) throw res2.error;
       }).catch(() => syncQueue.enqueue("wallets", "delete", null, id));
     }).catch(() => {
@@ -546,7 +546,7 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
         return updated;
       })
     );
-    supabase.from("wallet_spends").delete().eq("id", id).then((res) => {
+    Promise.resolve(supabase.from("wallet_spends").delete().eq("id", id)).then((res) => {
       if (res.error) throw res.error;
     }).catch(() => syncQueue.enqueue("wallet_spends", "delete", null, id));
   };
@@ -824,11 +824,12 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
         if (error || !data) return 0;
 
         for (const item of data) {
-          if (!item.id || item.id === null || (!item.metadata && !item.size)) {
+          const anyItem = item as any;
+          if (!item.id || item.id === null || (!anyItem.metadata && !anyItem.size)) {
             const subPath = folderPath ? `${folderPath}/${item.name}` : item.name;
             totalBytes += await listAllFiles(subPath);
           } else {
-            const size = item.metadata?.size || item.size || 0;
+            const size = anyItem.metadata?.size || anyItem.size || 0;
             totalBytes += size;
           }
         }

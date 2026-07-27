@@ -173,7 +173,6 @@ export function TransactionDetailSheet({ transaction, open, onClose }: Transacti
 
             {receipts.length === 0 ? (
               <div
-                type="button"
                 onClick={() => setScannerOpen(true)}
                 className="p-6 rounded-2xl text-center border border-dashed border-white/15 bg-white/[0.015] hover:bg-white/[0.03] transition-colors cursor-pointer group"
               >

@@ -6,8 +6,23 @@ import signal
 import socket
 import ctypes
 
+# -----------------------------------------------------------------------------
+# CRITICAL FIX FOR pythonw.exe:
+# When launched via VBScript using `pythonw.exe`, `sys.stdout` and `sys.stderr`
+# are `None`. Calling `print()` raises `AttributeError: 'NoneType' object has no attribute 'write'`,
+# causing the Python process to instantly crash before starting Vite or PyWebView.
+# Redirecting sys.stdout and sys.stderr to logs/app.log guarantees smooth execution.
+# -----------------------------------------------------------------------------
+script_dir = os.path.dirname(os.path.abspath(__file__))
+log_dir = os.path.join(script_dir, "logs")
+os.makedirs(log_dir, exist_ok=True)
+
+if sys.stdout is None:
+    sys.stdout = open(os.path.join(log_dir, "app.log"), "a", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.path.join(log_dir, "app.log"), "a", encoding="utf-8")
+
 # Set unique AppUserModelID so the app groups independently on the Windows taskbar
-# (not under python.exe or pythonw.exe)
 if sys.platform == "win32":
     try:
         myappid = 'slplayer.expense.desktop.v1'
@@ -18,12 +33,11 @@ if sys.platform == "win32":
 import webview
 
 def wait_for_port(port, timeout=20):
-    """Poll until the local dev server is accepting connections."""
+    """Poll until the local server is accepting connections on IPv4 127.0.0.1."""
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            # Check localhost (which handles both IPv4 127.0.0.1 and IPv6 ::1)
-            with socket.create_connection(("localhost", port), timeout=0.5):
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return True
         except (socket.timeout, ConnectionRefusedError, socket.gaierror):
             time.sleep(0.3)
@@ -33,33 +47,26 @@ def wait_for_port(port, timeout=20):
 def main():
     print("[SLPLAYER] Booting SLPlayer desktop client...")
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-
     # CREATE_NO_WINDOW flag prevents any CMD flash on Windows
     creation_flags = 0
     if sys.platform == "win32":
         creation_flags = 0x08000000
 
     # --- 1. Start Vite dev server silently in the background ---
-    # Using cmd /c ensures npm/node are found via the full Windows shell PATH
-    
-    log_dir = os.path.join(script_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
     vite_log = open(os.path.join(log_dir, "vite_server.log"), "w")
     
-    # Detect if we have a production build available.
-    # Serving production preview is virtually instant and performs much better.
-    client_html = os.path.join(script_dir, "dist", "client", "index.html")
+    # Serve production preview if the dist folder is present
+    client_html = os.path.join(script_dir, "dist", "index.html")
     use_prod = os.path.exists(client_html)
 
     vite_proc = None
     try:
         if use_prod:
-            print("[SLPLAYER] Starting production preview server on port 5173...")
-            vite_cmd = "cmd /c npm run preview"
+            print("[SLPLAYER] Starting production preview server on 127.0.0.1:5173...")
+            vite_cmd = "cmd /c npm run preview -- --host 127.0.0.1 --port 5173 --strictPort"
         else:
-            print("[SLPLAYER] Starting Vite dev server on port 5173...")
-            vite_cmd = "cmd /c npm run dev"
+            print("[SLPLAYER] Starting Vite dev server on 127.0.0.1:5173...")
+            vite_cmd = "cmd /c npm run dev -- --host 127.0.0.1 --port 5173 --strictPort"
 
         vite_proc = subprocess.Popen(
             vite_cmd,
@@ -100,7 +107,7 @@ def main():
     try:
         window = webview.create_window(
             title="SLPlayer",
-            url="http://localhost:5173",
+            url="http://127.0.0.1:5173",
             width=1280,
             height=800,
             min_size=(430, 700),
@@ -122,13 +129,13 @@ def main():
                     import clr
                     clr.AddReference('System.Drawing')
                     from System.Drawing import Icon
-                    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Expense tracking.ico")
+                    icon_path = os.path.join(script_dir, "Expense tracking.ico")
                     if os.path.exists(icon_path):
                         # 1. Update WinForms Form Icon
                         window.native.Icon = Icon(icon_path)
                         
                         # 2. Send WM_SETICON message to hWnd for Alt+Tab and taskbar refresh
-                        hwnd = int(window.native.Handle)
+                        hwnd = int(str(window.native.Handle))
                         WM_SETICON = 0x0080
                         ICON_BIG = 1
                         ICON_SMALL = 0
@@ -171,3 +178,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
