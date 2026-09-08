@@ -17,6 +17,7 @@ import { Card } from "@/components/expense/primitives";
 import { useExpense } from "@/lib/store";
 import { supabase } from "@/lib/supabase";
 import { BackupPayload } from "@/lib/types";
+import { exportTransactionsCsv, exportBackupJson } from "@/lib/exportUtils";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -72,70 +73,16 @@ function SettingsPage() {
   }, [getStorageUsage]);
 
   const handleExportCsv = () => {
-    const headers = [
-      "id",
-      "merchant",
-      "categoryId",
-      "amount",
-      "date",
-      "time",
-      "wallet_id",
-      "foreign_amount",
-      "foreign_currency",
-    ];
-
-    const escapeCsv = (val: string | number | undefined | null) => {
-      if (val === undefined || val === null) return "";
-      const str = String(val);
-      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    const rows = transactions.map((t) => [
-      escapeCsv(t.id),
-      escapeCsv(t.merchant),
-      escapeCsv(t.categoryId),
-      escapeCsv(t.amount),
-      escapeCsv(t.date),
-      escapeCsv(t.time),
-      escapeCsv(t.wallet_id),
-      escapeCsv(t.foreign_amount),
-      escapeCsv(t.foreign_currency),
-    ]);
-
-    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
-    const todayStr = new Date().toISOString().split("T")[0];
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `slplayer-transactions-${todayStr}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    exportTransactionsCsv(transactions);
   };
 
   const handleExportJson = () => {
-    const payload: BackupPayload = {
+    exportBackupJson({
       transactions,
       wallets,
       walletSpends,
       budgetLimits,
-    };
-    const jsonStr = JSON.stringify(payload, null, 2);
-    const todayStr = new Date().toISOString().split("T")[0];
-    const blob = new Blob([jsonStr], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `slplayer-backup-${todayStr}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    });
   };
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {

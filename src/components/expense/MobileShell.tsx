@@ -39,53 +39,14 @@ export function MobileShell({ children }: { children: ReactNode }) {
         className="min-h-screen w-full relative flex flex-col lg:flex-row overflow-hidden"
         style={{ backgroundColor: "var(--bg)" }}
       >
-        {/* Dynamic slow-moving visionOS ambient mesh background */}
+        {/* Dynamic slow-moving visionOS ambient mesh background (GPU-accelerated) */}
         <div
-          className="pointer-events-none fixed w-full h-full overflow-hidden z-0"
+          className="pointer-events-none fixed inset-0 overflow-hidden z-0"
           aria-hidden="true"
         >
-          {/* Deep Indigo/Blue Orb */}
-          <div
-            style={{
-              position: "absolute",
-              top: "-15%",
-              left: "-10%",
-              width: "60vw",
-              height: "60vw",
-              borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(10,132,255,0.18) 0%, rgba(10,132,255,0) 70%)",
-              filter: "blur(60px)",
-              animation: "ambient-glow-1 25s ease-in-out infinite alternate",
-            }}
-          />
-          {/* Magenta/Violet Orb for warm lighting */}
-          <div
-            style={{
-              position: "absolute",
-              bottom: "-20%",
-              right: "-10%",
-              width: "55vw",
-              height: "55vw",
-              borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(139,92,246,0.15) 0%, rgba(139,92,246,0) 70%)",
-              filter: "blur(70px)",
-              animation: "ambient-glow-2 30s ease-in-out infinite alternate",
-            }}
-          />
-          {/* Dark Teal Orb for contrast */}
-          <div
-            style={{
-              position: "absolute",
-              top: "30%",
-              right: "15%",
-              width: "45vw",
-              height: "45vw",
-              borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(48,209,88,0.06) 0%, rgba(48,209,88,0) 70%)",
-              filter: "blur(50px)",
-              animation: "ambient-glow-3 20s ease-in-out infinite alternate-reverse",
-            }}
-          />
+          <div className="ambient-orb-base ambient-orb-1" />
+          <div className="ambient-orb-base ambient-orb-2" />
+          <div className="ambient-orb-base ambient-orb-3" />
         </div>
 
         <QuickAddSheet open={quickOpen} onClose={() => setQuickOpen(false)} />

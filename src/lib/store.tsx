@@ -76,11 +76,12 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [walletSpends, setWalletSpends] = useState<WalletSpend[]>([]);
   const [customRates, setCustomRates] = useState<Record<string, number>>({});
+  const [liveRates, setLiveRates] = useState<Record<string, number>>({});
   const [isLoaded, setIsLoaded] = useState(false);
 
   const allRates = useMemo<Record<string, number>>(() => {
-    return { ...RATES, ...customRates };
-  }, [customRates]);
+    return { ...RATES, ...liveRates, ...customRates };
+  }, [liveRates, customRates]);
 
   const allCurrencies = useMemo<string[]>(() => {
     return Object.keys(allRates);
@@ -102,6 +103,39 @@ export function ExpenseProvider({ children }: { children: ReactNode }) {
 
       const savedRates = localStorage.getItem("slplayer-custom-rates");
       if (savedRates) setCustomRates(JSON.parse(savedRates));
+
+      const savedLiveRates = localStorage.getItem("slplayer-live-rates");
+      if (savedLiveRates) {
+        try {
+          setLiveRates(JSON.parse(savedLiveRates));
+        } catch {
+          // ignore corrupted json
+        }
+      }
+
+      // Background refresh of live rates once every 12 hours
+      const lastRatesUpdate = localStorage.getItem("slplayer-live-rates-updated");
+      const isRatesStale = !lastRatesUpdate || Date.now() - parseInt(lastRatesUpdate, 10) > 12 * 60 * 60 * 1000;
+      if (isRatesStale && navigator.onLine) {
+        fetch("https://open.er-api.com/v6/latest/CAD")
+          .then((res) => res.json())
+          .then((data) => {
+            if (data?.result === "success" && data?.rates) {
+              const freshRates: Record<string, number> = {};
+              for (const code of Object.keys(RATES)) {
+                if (data.rates[code]) {
+                  freshRates[code] = Math.round(data.rates[code] * 10000) / 10000;
+                }
+              }
+              setLiveRates(freshRates);
+              localStorage.setItem("slplayer-live-rates", JSON.stringify(freshRates));
+              localStorage.setItem("slplayer-live-rates-updated", String(Date.now()));
+            }
+          })
+          .catch((err) => {
+            console.warn("Live exchange rate fetch fallback:", err);
+          });
+      }
 
       const savedBudgets = localStorage.getItem("slplayer-budgets");
       if (savedBudgets) setBudgetLimits(JSON.parse(savedBudgets));
